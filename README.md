@@ -4,6 +4,8 @@ Real-time Red Light Green Light game using webcam-based motion detection. Detect
 # 🎥 Demo Proof
 Short video demonstrating the system in action:
 
+https://youtu.be/-ayb8UuzEJM
+
 # 🧠 Main technologies used
 
 HTML → structure of the game (UI, buttons, video, panels)
