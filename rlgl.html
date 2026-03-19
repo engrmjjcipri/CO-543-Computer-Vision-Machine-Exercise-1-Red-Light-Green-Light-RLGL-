@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>RLGL Game - Fixed 640</title>
+
+<style>
+body {
+  margin: 0;
+  background: #0f1117;
+  color: #fff;
+  font-family: Arial;
+  display: flex;
+  height: 100vh;
+  justify-content: center;
+  align-items: center;
+}
+
+.container {
+  display: flex;
+  gap: 20px;
+}
+
+.panel {
+  width: 300px;
+  background: #1c1f2a;
+  border-radius: 10px;
+  padding: 20px;
+}
+
+.status {
+  padding: 10px;
+  margin: 10px 0;
+  background: #2b3142;
+  border-radius: 8px;
+  font-weight: bold;
+}
+
+.progress {
+  height: 8px;
+  background: #333;
+  border-radius: 5px;
+  margin-top: 5px;
+  overflow: hidden;
+}
+
+.bar {
+  height: 100%;
+  width: 0%;
+  background: lime;
+}
+
+/* ✅ FIXED VIDEO SIZE */
+.video-box {
+  width: 640px;
+  height: 480px;
+  position: relative;
+  border: 4px solid gray;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+video, canvas {
+  width: 640px;
+  height: 480px;
+  object-fit: cover;
+}
+
+.dead {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.85);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+}
+
+.dead h1 {
+  font-size: 100px;
+  color: red;
+}
+
+.button-row {
+  display: flex;
+  gap: 10px;
+  margin-top: 15px;
+}
+
+button {
+  flex: 1;
+  padding: 10px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+}
+
+.start-btn { background: #4caf50; }
+.restart-btn { background: #444; color: white; }
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+  <div class="panel">
+    <h2>Red Light Green Light</h2>
+
+    <div class="status" id="status">Press Start</div>
+
+    <p>State: <span id="state">IDLE</span></p>
+    <p>Level: <span id="level">1</span></p>
+    <p>Cycle: <span id="cycle">0/2</span></p>
+
+    <p>Motion</p>
+    <div class="progress"><div class="bar" id="motionBar"></div></div>
+
+    <p>Phase Time</p>
+    <div class="progress"><div class="bar" id="timeBar"></div></div>
+
+    <p>Idle</p>
+    <div class="progress"><div class="bar" id="idleBar"></div></div>
+
+    <div class="button-row">
+      <button id="startBtn" class="start-btn" onclick="startGame()">Start</button>
+      <button id="restartBtn" class="restart-btn" onclick="manualRestart()" disabled>Restart</button>
+    </div>
+  </div>
+
+  <div class="video-box" id="videoBox">
+    <video id="video" autoplay></video>
+    <canvas id="canvas"></canvas>
+
+    <div class="dead" id="deadScreen">
+      <h1>✖</h1>
+      <p id="deathText"></p>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+/* PARAMETERS */
+const green_move_threshold = 0.04;
+const red_move_threshold_base = 0.055;
+const red_warning_threshold = 0.035;
+
+const red_grace_ms = 650;
+const idle_warning_ms = 1800;
+const idle_death_ms = 3600;
+
+const GREEN_MIN_L1 = 2600;
+const GREEN_MAX_L1 = 4200;
+const RED_MIN_L1 = 1700;
+const RED_MAX_L1 = 2900;
+
+/* STATE */
+let prevFrame = null;
+let motionScore = 0;
+
+let state = "IDLE";
+let level = 1;
+let cycle = 0;
+
+let phaseStart = 0;
+let phaseDuration = 0;
+let idleTimer = 0;
+let redStart = 0;
+
+/* CAMERA (FORCE LOWER RES) */
+navigator.mediaDevices.getUserMedia({
+  video: { width: 640, height: 480 }
+})
+.then(stream => video.srcObject = stream);
+
+/* BUTTON CONTROL */
+function setButtons(mode) {
+  startBtn.disabled = (mode !== "idle");
+  restartBtn.disabled = (mode === "idle");
+}
+
+/* STATUS */
+function setStatus(text) {
+  document.getElementById("status").innerText = text;
+}
+
+function setBorder(color) {
+  document.getElementById("videoBox").style.borderColor = color;
+}
+
+function updateStateUI() {
+  if (state === "GREEN") {
+    setStatus("🟢 GREEN: Move!");
+    setBorder("green");
+  } else if (state === "WARNING") {
+    setStatus("⚠️ WARNING: MOVE!");
+    setBorder("orange");
+  } else if (state === "RED") {
+    setStatus("🔴 RED: Stop!");
+    setBorder("red");
+  } else if (state === "DEAD") {
+    setStatus("💀 GAME OVER");
+  } else {
+    setStatus("Press Start");
+    setBorder("gray");
+  }
+}
+
+/* START */
+function startGame() {
+  if (state === "IDLE" || state === "DEAD") {
+    level = 1;
+    cycle = 0;
+    state = "GREEN";
+
+    prevFrame = null;
+    idleTimer = 0;
+
+    canvas.style.filter = "none";
+    deadScreen.style.display = "none";
+
+    setButtons("playing");
+
+    updateUI();
+    startPhase();
+    loop();
+  }
+}
+
+/* RESTART */
+function manualRestart() {
+  state = "IDLE";
+  level = 1;
+  cycle = 0;
+
+  prevFrame = null;
+  idleTimer = 0;
+
+  canvas.style.filter = "none";
+  deadScreen.style.display = "none";
+
+  updateUI();
+  setButtons("idle");
+}
+
+/* PHASE */
+function startPhase() {
+  phaseStart = Date.now();
+  idleTimer = 0;
+
+  let factor = level - 1;
+
+  let greenMin = Math.max(900, GREEN_MIN_L1 - factor * 200);
+  let greenMax = Math.max(1200, GREEN_MAX_L1 - factor * 250);
+
+  let redMin = Math.max(700, RED_MIN_L1 - factor * 140);
+  let redMax = Math.max(1000, RED_MAX_L1 - factor * 180);
+
+  if (state === "GREEN") {
+    phaseDuration = rand(greenMin, greenMax);
+  } else {
+    phaseDuration = rand(redMin, redMax);
+    redStart = Date.now();
+  }
+}
+
+function rand(min, max) {
+  return Math.random() * (max - min) + min;
+}
+
+/* MOTION */
+function computeMotion(curr, prev) {
+  let diff = 0;
+  for (let i = 0; i < curr.length; i += 4) {
+    diff += Math.abs(curr[i] - prev[i]);
+  }
+  return (diff / (curr.length / 4)) / 255;
+}
+
+/* LOOP */
+function loop() {
+  if (state === "DEAD" || state === "IDLE") return;
+
+  requestAnimationFrame(loop);
+  updateStateUI();
+
+  /* ✅ FIXED CANVAS SIZE */
+  canvas.width = 640;
+  canvas.height = 480;
+
+  ctx.drawImage(video, 0, 0, 640, 480);
+  let frame = ctx.getImageData(0, 0, 640, 480).data;
+
+  if (prevFrame) motionScore = computeMotion(frame, prevFrame);
+  prevFrame = frame;
+
+  updateBars();
+
+  let elapsed = Date.now() - phaseStart;
+
+  if (state === "GREEN") {
+    if (motionScore < green_move_threshold) idleTimer += 16;
+    else idleTimer = 0;
+
+    if (idleTimer > idle_warning_ms) state = "WARNING";
+    if (idleTimer > idle_death_ms) die("No movement");
+
+    if (elapsed > phaseDuration) {
+      state = "RED";
+      startPhase();
+    }
+  }
+
+  else if (state === "WARNING") {
+    if (motionScore > green_move_threshold) {
+      state = "GREEN";
+      idleTimer = 0;
+    } else {
+      idleTimer += 16;
+      if (idleTimer > idle_death_ms) die("DEAD");
+    }
+  }
+
+  else if (state === "RED") {
+    let redElapsed = Date.now() - redStart;
+
+    let redThreshold = red_move_threshold_base + (level - 1) * 0.008;
+
+    if (redElapsed > red_grace_ms && motionScore > redThreshold) {
+      die("DEAD");
+    }
+
+    if (elapsed > phaseDuration) {
+      cycle++;
+      let required = level * 2;
+
+      if (cycle >= required) {
+        level++;
+        cycle = 0;
+      }
+
+      updateUI();
+      state = "GREEN";
+      startPhase();
+    }
+  }
+}
+
+/* UI */
+function updateUI() {
+  document.getElementById("state").innerText = state;
+  document.getElementById("level").innerText = level;
+  document.getElementById("cycle").innerText = cycle + "/" + (level * 2);
+}
+
+function updateBars() {
+  motionBar.style.width = (motionScore * 300) + "%";
+
+  let elapsed = Date.now() - phaseStart;
+  timeBar.style.width = (elapsed / phaseDuration * 100) + "%";
+
+  idleBar.style.width = (idleTimer / idle_death_ms * 100) + "%";
+}
+
+/* DEAD */
+function die(reason) {
+  state = "DEAD";
+
+  deadScreen.style.display = "flex";
+  deathText.innerText = "❌ " + reason;
+
+  canvas.style.filter = "grayscale(100%)";
+
+  setButtons("dead");
+}
+</script>
+
+</body>
+</html>
